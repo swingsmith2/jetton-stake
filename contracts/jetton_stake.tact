@@ -38,6 +38,13 @@ message Withdraw {
     receiver: Address;
 }
 
+struct DepositInfo {
+    sender: Address;
+    jetton: Address;
+    amount: Int;
+    query_id: Int;
+}
+
 contract JettonStake with Deployable, OwnableTransferable {
     owner: Address;
     usdt_content: Cell;
@@ -51,6 +58,8 @@ contract JettonStake with Deployable, OwnableTransferable {
 
     deposit_count: Int;
     withdraw_count: Int;
+
+    deposit_infos: map<Int, DepositInfo>;
 
     JETTON_TRANSFER_GAS: Int;
 
@@ -69,6 +78,8 @@ contract JettonStake with Deployable, OwnableTransferable {
 
         self.usdt_balances = emptyMap();
         self.usdc_balances = emptyMap();
+        self.deposit_infos = emptyMap();
+
         self.deposit_count = 10000000;
         self.withdraw_count = 10000000;
     }
@@ -85,11 +96,24 @@ contract JettonStake with Deployable, OwnableTransferable {
         self.withdraw(msg);
     }
 
+    receive(msg: JettonTransferNotification) {
+        self.process_notification(msg);
+    }
+
     inline fun deposit(msg: Deposit) {
         require(msg.jetton == self.usdt_master || msg.jetton == self.usdc_master, "Deposit: Invalid jetton");
         require(msg.amount > 0, "Deposit: Amount must be greater than 0");
 
+        let deposit_info: DepositInfo = DepositInfo{
+                sender: sender(),
+                jetton: msg.jetton,
+                amount: msg.amount,
+                query_id: self.deposit_count
+            };
+        self.deposit_infos.set(self.deposit_count, deposit_info);
+
         if (msg.jetton == self.usdt_master) {
+
             let jettonTransfer : JettonTransfer = JettonTransfer{
                 query_id: self.deposit_count,
                 amount: msg.amount,
@@ -104,14 +128,6 @@ contract JettonStake with Deployable, OwnableTransferable {
                 value: self.JETTON_TRANSFER_GAS,
                 body: jettonTransfer.toCell(),
             });
-
-            if (self.usdt_balances.exists(sender())) {
-                self.usdt_balances.set(sender(), self.usdt_balances.get(sender())!! + msg.amount);
-            } else {
-                self.usdt_balances.set(sender(), msg.amount);
-            }
-            self.deposit_count = self.deposit_count + 1;
-
         } else if (msg.jetton == self.usdc_master) {
             let jettonTransfer : JettonTransfer = JettonTransfer{
                 query_id: self.deposit_count,
@@ -127,14 +143,9 @@ contract JettonStake with Deployable, OwnableTransferable {
                 value: self.JETTON_TRANSFER_GAS,
                 body: jettonTransfer.toCell(),
             });
-
-            if (self.usdc_balances.exists(sender())) {
-                self.usdc_balances.set(sender(), self.usdc_balances.get(sender())!! + msg.amount);
-            } else {
-                self.usdc_balances.set(sender(), msg.amount);
-            }
-            self.deposit_count = self.deposit_count + 1;
         }
+
+        self.deposit_count = self.deposit_count + 1;
     }
 
     inline fun withdraw(msg: Withdraw) {
@@ -228,6 +239,31 @@ contract JettonStake with Deployable, OwnableTransferable {
        }
     }
 
+    inline fun process_notification(notification: JettonTransferNotification) {
+        require(notification.sender == sender(), "Notification not from your jetton wallet!");
+        let deposit_info: DepositInfo = self.deposit_infos.get(notification.query_id)!!;
+        require(deposit_info.sender == sender(), "Notification not from your deposit!");
+        require(notification.amount == deposit_info.amount, "Notification amount must be equal to deposit amount!");
+        
+        if (deposit_info.jetton == self.usdt_master) {
+            if (self.usdt_balances.exists(deposit_info.sender)) {
+                let balance: Int = self.usdt_balances.get(deposit_info.sender)!!;
+                self.usdt_balances.set(deposit_info.sender, balance + notification.amount);
+            } else {
+                self.usdt_balances.set(deposit_info.sender, notification.amount);
+            }
+        } else if (deposit_info.jetton == self.usdc_master) {
+            if (self.usdc_balances.exists(deposit_info.sender)) {
+                let balance: Int = self.usdc_balances.get(deposit_info.sender)!!;
+                self.usdc_balances.set(deposit_info.sender, balance + notification.amount);
+            } else {
+                self.usdc_balances.set(deposit_info.sender, notification.amount);
+            }
+        }
+
+        self.deposit_infos.del(notification.query_id);
+    }
+
     inline fun calculate_usdt_wallet_address(user_address: Address): Address {     
         let usdtInit: StateInit = initOf ExampleJettonWallet(user_address, self.usdt_master);
         return contractAddress(usdtInit);
@@ -254,7 +290,7 @@ contract JettonStake with Deployable, OwnableTransferable {
         return self.calculate_usdc_wallet_address(user_address);
     }
 
-    get fun get_usdt_balances(user_address: Address): Int {
+    get fun get_deposit_usdt_balance(user_address: Address): Int {
         if (self.usdt_balances.exists(user_address)) {
             return self.usdt_balances.get(user_address)!!;
         } else {
@@ -262,7 +298,7 @@ contract JettonStake with Deployable, OwnableTransferable {
         }
     }
 
-    get fun get_usdc_balances(user_address: Address): Int {
+    get fun get_deposit_usdc_balance(user_address: Address): Int {
         if (self.usdc_balances.exists(user_address)) {
             return self.usdc_balances.get(user_address)!!;
         } else {
