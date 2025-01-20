@@ -2,7 +2,6 @@ node_modules
 temp
 build
 dist
-wrappers
 .DS_Store
 .env
 
